@@ -19,7 +19,7 @@ MODEL_ID = os.environ.get(
 AWS_REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
 
 # Maximum number of agent loop iterations (safety cap)
-MAX_AGENT_ITERATIONS = 30
+MAX_AGENT_ITERATIONS = 60
 
 # Git branch prefix for AI-generated branches
 BRANCH_PREFIX = "ai"

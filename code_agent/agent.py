@@ -216,10 +216,15 @@ def _process_tool_calls(
         result_text = execute_tool(tool_name, tool_input, repo_path)
 
         # Track files that were modified
-        if tool_name in ("write_file", "create_file") and not result_text.startswith(
-            "Error"
-        ):
-            files_changed.append(tool_input["path"])
+        if not result_text.startswith("Error"):
+            if tool_name in ("write_file", "create_file", "patch_file"):
+                files_changed.append(tool_input["path"])
+            elif tool_name == "delete_file":
+                files_changed.append(f"(deleted) {tool_input['path']}")
+            elif tool_name == "rename_file":
+                files_changed.append(
+                    f"(renamed) {tool_input['old_path']} → {tool_input['new_path']}"
+                )
 
         tool_results.append(
             {
