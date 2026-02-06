@@ -12,7 +12,7 @@ import time
 
 from slack_bolt import App
 
-from .mock_data import process_ticket
+from code_agent.workflow import process_slack_ticket
 from .messages import (
     accepted_blocks,
     in_progress_blocks,
@@ -21,6 +21,7 @@ from .messages import (
 )
 
 _TICKET_RE = re.compile(r"^[A-Za-z]+-\d+$")
+_URL_RE = re.compile(r"^https?://")
 
 # Default repo URL — override with the REPO_URL env var
 _DEFAULT_REPO_URL = "https://github.com/org/repo.git"
@@ -33,26 +34,39 @@ def register(app: App) -> None:
     def handle_do_ticket(ack, command, client, logger):
         # --- 1. Parse & validate -------------------------------------------
         raw_text = (command.get("text") or "").strip()
-        if not raw_text or not _TICKET_RE.match(raw_text):
+        parts = raw_text.split()
+        
+        # Must have at least a ticket key
+        if not parts or not _TICKET_RE.match(parts[0]):
             ack(
                 response_type="ephemeral",
                 text=(
-                    ":warning:  Please provide a valid ticket key, e.g. `/do-ticket PROJ-123`"
+                    ":warning:  Please provide a valid ticket key, e.g.\n"
+                    "`/do-ticket PROJ-123`\n"
+                    "`/do-ticket PROJ-123 https://github.com/owner/repo`"
                 ),
             )
             return
 
-        ticket_key = raw_text.upper()
+        ticket_key = parts[0].upper()
+        
+        # Check for optional repo URL (second argument)
+        if len(parts) >= 2 and _URL_RE.match(parts[1]):
+            repo_url = parts[1]
+        else:
+            repo_url = os.environ.get("REPO_URL", _DEFAULT_REPO_URL)
+        
         user_id = command["user_id"]
         username = command.get("user_name", "unknown")
+        response_url = command["response_url"]  # Use response URL to reply
 
         # Acknowledge immediately (Slack requires < 3 s)
-        ack(f":thumbsup:  Got it — working on *{ticket_key}*…")
+        ack(f":thumbsup:  Got it — working on *{ticket_key}* with repo `{repo_url}`…")
 
         # --- 2. Kick off async processing in a background thread -----------
         threading.Thread(
             target=_process_in_background,
-            args=(client, logger, user_id, username, ticket_key),
+            args=(client, logger, response_url, user_id, username, ticket_key, repo_url),
             daemon=True,
         ).start()
 
@@ -62,70 +76,44 @@ def register(app: App) -> None:
         _ack()
 
 
-def _process_in_background(client, logger, user_id, username, ticket_key):
-    """Run the (mock) ticket processing and post updates to the user's DM."""
+def _process_in_background(client, logger, response_url, user_id, username, ticket_key, repo_url):
+    """Run the ticket processing and post updates via response_url."""
+    import requests
+    
+    def send_response(text, blocks=None):
+        """Send a message using the Slack response URL."""
+        payload = {"text": text, "response_type": "in_channel"}
+        if blocks:
+            payload["blocks"] = blocks
+        requests.post(response_url, json=payload, timeout=10)
+    
     try:
-        # Open / fetch the DM channel with the user
-        dm = client.conversations_open(users=[user_id])
-        channel = dm["channel"]["id"]
-
-        # --- Post "accepted" message --------------------------------------
-        result = client.chat_postMessage(
-            channel=channel,
-            text=f"Working on {ticket_key}…",
-            blocks=accepted_blocks(ticket_key),
-        )
-        ts = result["ts"]
-
-        # Short pause then update to "in progress"
-        time.sleep(1)
-        client.chat_update(
-            channel=channel,
-            ts=ts,
-            text=f"In progress: {ticket_key}",
-            blocks=in_progress_blocks(ticket_key, "Cloning repo & running agent"),
+        # --- Post "in progress" message -----------------------------------
+        send_response(
+            f"<@{user_id}> Working on *{ticket_key}*… :hourglass_flowing_sand:",
         )
 
-        # --- Call the (mock) backend --------------------------------------
-        repo_url = os.environ.get("REPO_URL", _DEFAULT_REPO_URL)
-        request_payload = {
-            "ticket_key": ticket_key,
-            "repo_url": repo_url,
-            "slack_username": username,
-        }
-
+        # --- Call the real backend -----------------------------------------
         start = time.monotonic()
-        response = process_ticket(request_payload)
+        logger.info("Starting workflow for %s with repo %s", ticket_key, repo_url)
+        
+        # Call the real workflow function
+        pr_url = process_slack_ticket(ticket_key, repo_url, username)
         elapsed = time.monotonic() - start
 
         # --- Post final result --------------------------------------------
-        if response.get("status") == "success":
-            client.chat_update(
-                channel=channel,
-                ts=ts,
-                text=f"Done! PR for {ticket_key}: {response['pr_url']}",
-                blocks=completed_blocks(response, elapsed),
-            )
-        else:
-            client.chat_update(
-                channel=channel,
-                ts=ts,
-                text=f"Failed to process {ticket_key}",
-                blocks=error_blocks(
-                    ticket_key,
-                    response.get("error", "Unknown error from backend."),
-                ),
-            )
+        send_response(
+            f"<@{user_id}> :white_check_mark: *Done!* PR for *{ticket_key}* created in {elapsed:.1f}s\n\n"
+            f":link: <{pr_url}|View Pull Request>",
+        )
+        logger.info("Completed %s in %.1fs - PR: %s", ticket_key, elapsed, pr_url)
 
-    except Exception:
+    except Exception as e:
         logger.exception("Error processing ticket %s", ticket_key)
         # Best-effort error message
         try:
-            client.chat_update(
-                channel=channel,
-                ts=ts,
-                text=f"Failed to process {ticket_key}",
-                blocks=error_blocks(ticket_key, "An unexpected error occurred."),
+            send_response(
+                f"<@{user_id}> :x: *Failed* to process *{ticket_key}*\n\nError: {e}",
             )
         except Exception:
             logger.exception("Could not send error message for %s", ticket_key)

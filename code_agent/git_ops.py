@@ -29,6 +29,16 @@ def _run_git(repo_path: str, *args: str) -> str:
     return result.stdout.strip()
 
 
+def _ensure_authenticated_remote(repo_path: str, github_token: str, repo_owner: str, repo_name: str) -> None:
+    """Ensure the 'origin' remote URL contains the GitHub token for push access.
+    
+    This updates the remote URL to include the token if not already present.
+    """
+    authenticated_url = f"https://{github_token}@github.com/{repo_owner}/{repo_name}.git"
+    logger.debug("Setting authenticated remote URL for push")
+    _run_git(repo_path, "remote", "set-url", "origin", authenticated_url)
+
+
 def create_pull_request(
     repo_path: str,
     github_token: str,
@@ -77,6 +87,9 @@ def create_pull_request(
 
     logger.info("Committing: %s", commit_message)
     _run_git(repo_path, "commit", "-m", commit_message)
+
+    # Ensure remote URL has token for push authentication
+    _ensure_authenticated_remote(repo_path, github_token, repo_owner, repo_name)
 
     logger.info("Pushing branch to origin...")
     _run_git(repo_path, "push", "origin", branch_name)

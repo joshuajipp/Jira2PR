@@ -3,29 +3,85 @@
 Sends the Jira ticket to Claude via Bedrock, lets the model iteratively
 explore and modify the repository through tool calls, and returns a summary
 of all changes made.
+
+Supports two authentication methods:
+1. Bearer token via AWS_BEARER_TOKEN_BEDROCK (direct HTTP requests)
+2. Standard AWS credentials via boto3 (AWS_ACCESS_KEY_ID/SECRET)
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
-import boto3
+import requests
 
 from .config import AWS_REGION, MAX_AGENT_ITERATIONS, MODEL_ID, SYSTEM_PROMPT
 from .tools import TOOL_DEFINITIONS, execute_tool
 
 logger = logging.getLogger(__name__)
 
+# Bedrock API endpoint for converse
+BEDROCK_ENDPOINT = f"https://bedrock-runtime.{AWS_REGION}.amazonaws.com"
+
+
+class BedrockBearerClient:
+    """HTTP client for Bedrock API using Bearer token authentication."""
+
+    def __init__(self, bearer_token: str, region: str = AWS_REGION):
+        self.bearer_token = bearer_token
+        self.region = region
+        self.endpoint = f"https://bedrock-runtime.{region}.amazonaws.com"
+
+    def converse(
+        self,
+        modelId: str,
+        messages: list,
+        system: list = None,
+        toolConfig: dict = None,
+    ) -> dict:
+        """Call the Bedrock Converse API with Bearer token auth."""
+        url = f"{self.endpoint}/model/{modelId}/converse"
+
+        headers = {
+            "Authorization": f"Bearer {self.bearer_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        payload = {
+            "messages": messages,
+        }
+        if system:
+            payload["system"] = system
+        if toolConfig:
+            payload["toolConfig"] = toolConfig
+
+        logger.debug("Calling Bedrock API: %s", url)
+        response = requests.post(url, headers=headers, json=payload, timeout=120)
+        response.raise_for_status()
+
+        return response.json()
+
 
 def _build_bedrock_client() -> Any:
-    """Create a bedrock-runtime client using env-based credentials.
+    """Create a Bedrock client using available credentials.
 
-    Authentication is handled automatically by boto3 — it reads
-    AWS_BEARER_TOKEN_BEDROCK (API key) or standard AWS credential
-    env vars (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY).
+    Priority:
+    1. AWS_BEARER_TOKEN_BEDROCK - uses direct HTTP with Bearer token
+    2. Standard boto3 auth (AWS_ACCESS_KEY_ID/SECRET or IAM role)
     """
+    bearer_token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+
+    if bearer_token:
+        logger.info("Using Bearer token authentication for Bedrock")
+        return BedrockBearerClient(bearer_token, AWS_REGION)
+
+    # Fall back to boto3 standard authentication
+    logger.info("Using boto3 standard authentication for Bedrock")
+    import boto3
     return boto3.client("bedrock-runtime", region_name=AWS_REGION)
 
 
