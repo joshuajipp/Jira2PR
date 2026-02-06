@@ -123,11 +123,42 @@ def _parse_github_repo(repo_url: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
-def _clone_repo(repo_url: str, dest: Path) -> None:
-    """Clone the given repo URL into ``dest``."""
+def _make_authenticated_url(repo_url: str, token: str) -> str:
+    """Inject GitHub token into the repo URL for authenticated access.
+    
+    Converts https://github.com/owner/repo to https://TOKEN@github.com/owner/repo
+    """
+    if not token:
+        return repo_url
+    
+    # Handle SSH URLs - convert to HTTPS with token
+    if repo_url.startswith("git@github.com:"):
+        path = repo_url.replace("git@github.com:", "")
+        return f"https://{token}@github.com/{path}"
+    
+    # Handle HTTPS URLs
+    if repo_url.startswith("https://github.com"):
+        return repo_url.replace("https://github.com", f"https://{token}@github.com")
+    
+    # Handle URLs that already have a token or other auth
+    if "@github.com" in repo_url:
+        return repo_url
+    
+    return repo_url
+
+
+def _clone_repo(repo_url: str, dest: Path, github_token: str = None) -> None:
+    """Clone the given repo URL into ``dest``.
+    
+    If github_token is provided, it will be used for authentication.
+    """
+    # Use authenticated URL if token provided
+    clone_url = _make_authenticated_url(repo_url, github_token) if github_token else repo_url
+    
+    # Log without exposing the token
     logger.info("Cloning repo %s into %s", repo_url, dest)
     subprocess.run(
-        ["git", "clone", "--depth", "1", repo_url, str(dest)],
+        ["git", "clone", "--depth", "1", clone_url, str(dest)],
         check=True,
         text=True,
         capture_output=True,
@@ -163,7 +194,7 @@ def process_slack_ticket(ticket_key: str, repo_url: str, slack_username: str) ->
 
     with tempfile.TemporaryDirectory(prefix="jira2pr-") as tmpdir:
         repo_path = Path(tmpdir) / "repo"
-        _clone_repo(repo_url, repo_path)
+        _clone_repo(repo_url, repo_path, github_token=github_token)
 
         # Late import to avoid circular import at module load time
         from . import handle_ticket
