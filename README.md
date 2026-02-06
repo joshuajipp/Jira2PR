@@ -16,7 +16,7 @@ An AI-powered Slack bot that automatically transforms Jira tickets into GitHub P
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
 │   Slack     │────▶│  Slack Bot  │────▶│  Workflow   │────▶│   Bedrock   │
-│  /do-ticket │     │  (Socket)   │     │  Orchestor  │     │   (Claude)  │
+│  /do-ticket │     │  (Socket)   │     │  Orchestr.  │     │   (Claude)  │
 └─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
                                                │
                     ┌──────────────────────────┼──────────────────────────┐
@@ -24,9 +24,10 @@ An AI-powered Slack bot that automatically transforms Jira tickets into GitHub P
                     ▼                          ▼                          ▼
              ┌─────────────┐           ┌─────────────┐           ┌─────────────┐
              │    Jira     │           │   GitHub    │           │  Git Ops    │
-             │    API      │           │    API      │           │  (clone/    │
-             │             │           │  (PyGithub) │           │   push/PR)  │
+             │    API      │◀──────────│ Webhook     │           │  (clone/    │
+             │             │    POST   │ Server      │           │   push/PR)  │
              └─────────────┘           └─────────────┘           └─────────────┘
+                                        (FastAPI)
 ```
 
 ## Prerequisites
