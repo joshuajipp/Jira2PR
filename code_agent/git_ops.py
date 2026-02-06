@@ -123,3 +123,97 @@ def create_pull_request(
     logger.info("PR created: %s", pr.html_url)
     return pr.html_url
 
+
+# ---------------------------------------------------------------------------
+# PR comment resolution helpers
+# ---------------------------------------------------------------------------
+
+def commit_and_push_to_branch(
+    repo_path: str,
+    github_token: str,
+    repo_owner: str,
+    repo_name: str,
+    branch_name: str,
+    commit_message: str,
+) -> str:
+    """Stage all changes, commit, and push to an existing branch.
+
+    Parameters
+    ----------
+    repo_path : str
+        Absolute path to the locally cloned repo (already on the target branch).
+    github_token : str
+        GitHub personal access token.
+    repo_owner : str
+        GitHub org or username.
+    repo_name : str
+        Repository name.
+    branch_name : str
+        The branch to push to (must already be checked out).
+    commit_message : str
+        Commit message.
+
+    Returns
+    -------
+    str
+        The commit SHA of the new commit.
+    """
+    logger.info("Staging all changes...")
+    _run_git(repo_path, "add", ".")
+
+    logger.info("Committing: %s", commit_message)
+    _run_git(repo_path, "commit", "-m", commit_message)
+
+    # Get the commit SHA before pushing
+    commit_sha = _run_git(repo_path, "rev-parse", "HEAD")
+
+    # Ensure remote URL has token for push authentication
+    _ensure_authenticated_remote(repo_path, github_token, repo_owner, repo_name)
+
+    logger.info("Pushing to branch %s...", branch_name)
+    _run_git(repo_path, "push", "origin", branch_name)
+
+    logger.info("Pushed commit %s to %s", commit_sha[:8], branch_name)
+    return commit_sha
+
+
+def reply_to_pr_comment(
+    github_token: str,
+    repo_owner: str,
+    repo_name: str,
+    pr_number: int,
+    comment_id: int,
+    reply_body: str,
+) -> str:
+    """Post a reply to a PR review comment on GitHub.
+
+    Parameters
+    ----------
+    github_token : str
+        GitHub personal access token.
+    repo_owner : str
+        GitHub org or username.
+    repo_name : str
+        Repository name.
+    pr_number : int
+        Pull request number.
+    comment_id : int
+        The ID of the review comment to reply to.
+    reply_body : str
+        The text of the reply.
+
+    Returns
+    -------
+    str
+        The URL of the reply comment.
+    """
+    gh = Github(github_token)
+    repo = gh.get_repo(f"{repo_owner}/{repo_name}")
+    pr = repo.get_pull(pr_number)
+
+    # Create a reply to the specific review comment
+    reply = pr.create_review_comment_reply(comment_id, reply_body)
+
+    logger.info("Replied to comment %d on PR #%d", comment_id, pr_number)
+    return reply.html_url
+

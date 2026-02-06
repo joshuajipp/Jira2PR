@@ -106,15 +106,27 @@ def _format_jira_ticket(jira_ticket: dict) -> str:
     return "\n\n".join(parts)
 
 
-def run_agent(jira_ticket: dict, repo_path: str) -> tuple[str, list[str]]:
+def run_agent(
+    jira_ticket: dict,
+    repo_path: str,
+    *,
+    user_prompt: str | None = None,
+    system_prompt: str | None = None,
+) -> tuple[str, list[str]]:
     """Run the agentic loop that modifies the repository.
 
     Parameters
     ----------
     jira_ticket : dict
         Jira ticket data with at least 'key', 'summary', 'description'.
+        Can also be used as a generic task dict with a 'description' key.
     repo_path : str
         Absolute path to the locally cloned repository.
+    user_prompt : str, optional
+        Custom user prompt to send as the first message.  If not provided,
+        a default prompt is built from the jira_ticket dict.
+    system_prompt : str, optional
+        Custom system prompt.  Defaults to ``SYSTEM_PROMPT`` from config.
 
     Returns
     -------
@@ -122,24 +134,24 @@ def run_agent(jira_ticket: dict, repo_path: str) -> tuple[str, list[str]]:
         A tuple of (summary_text, list_of_changed_file_paths).
     """
     client = _build_bedrock_client()
-    ticket_text = _format_jira_ticket(jira_ticket)
+    effective_system = system_prompt or SYSTEM_PROMPT
+
+    if user_prompt is None:
+        ticket_text = _format_jira_ticket(jira_ticket)
+        user_prompt = (
+            "Here is the Jira ticket you need to implement:\n\n"
+            "---\n"
+            f"{ticket_text}\n"
+            "---\n\n"
+            "The repository is cloned locally. Start by exploring "
+            "the repository structure, then read relevant files, "
+            "and make the necessary changes to implement this ticket."
+        )
 
     messages: list[dict] = [
         {
             "role": "user",
-            "content": [
-                {
-                    "text": (
-                        "Here is the Jira ticket you need to implement:\n\n"
-                        "---\n"
-                        f"{ticket_text}\n"
-                        "---\n\n"
-                        "The repository is cloned locally. Start by exploring "
-                        "the repository structure, then read relevant files, "
-                        "and make the necessary changes to implement this ticket."
-                    )
-                }
-            ],
+            "content": [{"text": user_prompt}],
         }
     ]
 
@@ -152,7 +164,7 @@ def run_agent(jira_ticket: dict, repo_path: str) -> tuple[str, list[str]]:
         response = client.converse(
             modelId=MODEL_ID,
             messages=messages,
-            system=[{"text": SYSTEM_PROMPT}],
+            system=[{"text": effective_system}],
             toolConfig={"tools": TOOL_DEFINITIONS},
         )
 

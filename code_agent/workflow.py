@@ -211,4 +211,115 @@ def process_slack_ticket(ticket_key: str, repo_url: str, slack_username: str) ->
     return pr_url
 
 
-__all__ = ["process_slack_ticket", "fetch_jira_ticket"]
+# ---------------------------------------------------------------------------
+# PR comment resolution workflow
+# ---------------------------------------------------------------------------
+
+def _clone_repo_branch(
+    repo_url: str, dest: Path, branch: str, github_token: str | None = None
+) -> None:
+    """Clone a specific branch of a repo into ``dest``.
+
+    Unlike ``_clone_repo`` (which does a shallow clone of the default branch),
+    this fetches just enough history to push a new commit to ``branch``.
+    """
+    clone_url = (
+        _make_authenticated_url(repo_url, github_token)
+        if github_token
+        else repo_url
+    )
+
+    logger.info("Cloning branch '%s' of %s into %s", branch, repo_url, dest)
+    subprocess.run(
+        ["git", "clone", "--branch", branch, "--single-branch", clone_url, str(dest)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    # Configure git user for commits
+    subprocess.run(
+        ["git", "config", "user.email", "ai-agent@hackathon.local"],
+        cwd=str(dest), check=True, text=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "AI Code Agent"],
+        cwd=str(dest), check=True, text=True, capture_output=True,
+    )
+
+
+def process_pr_comment(
+    webhook_payload: dict,
+    additional_payloads: list[dict] | None = None,
+) -> str:
+    """End-to-end flow for resolving PR review comment(s).
+
+    Accepts one or more GitHub webhook payloads, clones the PR branch,
+    runs the AI agent to resolve all comments, commits, pushes, and
+    replies to each comment on GitHub.
+
+    Parameters
+    ----------
+    webhook_payload : dict
+        The primary GitHub ``pull_request_review_comment`` webhook payload.
+    additional_payloads : list[dict], optional
+        Extra comment payloads from the same review to batch together.
+
+    Returns
+    -------
+    str
+        The commit SHA of the resolution commit.
+    """
+    # Late import to avoid circular dependency at load time
+    from . import handle_pr_comments, parse_comment_from_payload
+
+    github_token = os.environ.get("GITHUB_TOKEN")
+    if not github_token:
+        raise RuntimeError("GITHUB_TOKEN environment variable is required.")
+
+    # Parse all comment payloads
+    comments = [parse_comment_from_payload(webhook_payload)]
+    if additional_payloads:
+        for payload in additional_payloads:
+            comments.append(parse_comment_from_payload(payload))
+
+    # Extract repo / PR info from the first comment
+    first = comments[0]
+    repo_owner = first["repo_owner"]
+    repo_name = first["repo_name"]
+    branch_name = first["branch"]
+    pr_number = first["pr_number"]
+    clone_url = first["clone_url"]
+
+    logger.info(
+        "Processing %d PR comment(s) on %s/%s PR #%d branch %s",
+        len(comments),
+        repo_owner,
+        repo_name,
+        pr_number,
+        branch_name,
+    )
+
+    with tempfile.TemporaryDirectory(prefix="pr-comment-") as tmpdir:
+        repo_path = Path(tmpdir) / "repo"
+        _clone_repo_branch(clone_url, repo_path, branch_name, github_token)
+
+        commit_sha = handle_pr_comments(
+            comments=comments,
+            repo_path=str(repo_path),
+            github_token=github_token,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            branch_name=branch_name,
+            pr_number=pr_number,
+        )
+
+    logger.info(
+        "Completed PR comment resolution for PR #%d. Commit: %s",
+        pr_number,
+        commit_sha[:8],
+    )
+    return commit_sha
+
+
+__all__ = ["process_slack_ticket", "fetch_jira_ticket", "process_pr_comment"]
