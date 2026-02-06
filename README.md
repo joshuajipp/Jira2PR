@@ -132,17 +132,17 @@ The bot will:
 2. Send progress updates as it works
 3. Reply with a link to the created Pull Request (or an error message)
 
-### API Gateway (Optional)
-
-For programmatic access, you can also use the FastAPI server:
-
-```bash
-PORT=9000 python -m code_agent.server
-```
-
-Endpoints:
-- `POST /tickets/process` - Process a ticket
-- `GET /health` - Health check
+### GitHub comment webhook (follow-up changes)
+- Start the minimal webhook server (FastAPI):
+  ```bash
+  PORT=9000 uvicorn code_agent.webhook_server:app --reload --port ${PORT:-8000}
+  # or
+  PORT=9000 python -m code_agent.webhook_server
+  ```
+- Point a GitHub webhook (or App) at `POST /webhooks/github`.
+- Subscribe to `issue_comment` and `pull_request_review_comment` events.
+- Comments must start with one of: `ai:`, `ai please`, `/ai`, `@ai` to trigger the agent.
+- The workflow detects the PR branch (works for both conversation tab comments and inline review comments), reruns the AI agent with the comment as context, pushes to the same branch, and posts a PR comment summarizing the changes.
 
 ## Project Structure
 
@@ -158,13 +158,13 @@ Jira2PR-main/
 │   └── handlers.py        # Slash command handler (/do-ticket), background processing
 │
 └── code_agent/            # Core AI Agent Module
-    ├── __init__.py        # Package exports (process_slack_ticket)
+    ├── __init__.py        # Package exports (process_slack_ticket, process_pr_comment)
     ├── config.py          # Configuration constants (model ID, regions, etc.)
     ├── workflow.py        # Main orchestrator - fetches Jira, clones repo, runs agent
     ├── agent.py           # AI agent loop - Bedrock Converse API with tool use
     ├── tools.py           # File operation tools (read, write, list, create)
-    ├── git_ops.py         # Git operations (checkout, commit, push, create PR)
-    └── server.py          # FastAPI server (optional REST API)
+    ├── git_ops.py         # Git operations (checkout, commit, push, PR replies)
+    └── webhook_server.py  # Minimal FastAPI webhook server for GitHub comments
 ```
 
 ### Key Files Explained

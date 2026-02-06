@@ -1,14 +1,14 @@
 """Git operations and GitHub PR creation.
 
 Handles branching, committing, pushing, and opening a pull request via
-the GitHub REST API (PyGithub).
+the GitHub REST API (PyGithub). Also supports committing to existing PR
+branches and replying to review comments.
 """
 
 from __future__ import annotations
 
 import logging
 import subprocess
-from pathlib import Path
 
 from github import Github
 
@@ -30,14 +30,15 @@ def _run_git(repo_path: str, *args: str) -> str:
 
 
 def _ensure_authenticated_remote(repo_path: str, github_token: str, repo_owner: str, repo_name: str) -> None:
-    """Ensure the 'origin' remote URL contains the GitHub token for push access.
-    
-    This updates the remote URL to include the token if not already present.
-    """
+    """Ensure the 'origin' remote URL contains the GitHub token for push access."""
     authenticated_url = f"https://{github_token}@github.com/{repo_owner}/{repo_name}.git"
     logger.debug("Setting authenticated remote URL for push")
     _run_git(repo_path, "remote", "set-url", "origin", authenticated_url)
 
+
+# ---------------------------------------------------------------------------
+# PR creation workflow
+# ---------------------------------------------------------------------------
 
 def create_pull_request(
     repo_path: str,
@@ -49,36 +50,10 @@ def create_pull_request(
     change_summary: str,
     files_changed: list[str],
 ) -> str:
-    """Commit local changes, push a new branch, and open a GitHub PR.
-
-    Parameters
-    ----------
-    repo_path : str
-        Absolute path to the locally cloned repo.
-    github_token : str
-        GitHub personal access token (needs ``repo`` scope).
-    repo_owner : str
-        GitHub org or username that owns the repo.
-    repo_name : str
-        Name of the GitHub repository.
-    ticket_key : str
-        Jira ticket key, e.g. ``PROJ-123``.
-    ticket_summary : str
-        One-line summary from the Jira ticket.
-    change_summary : str
-        AI-generated summary of all changes.
-    files_changed : list[str]
-        List of file paths that were modified.
-
-    Returns
-    -------
-    str
-        The URL of the newly created pull request.
-    """
+    """Commit local changes, push a new branch, and open a GitHub PR."""
     branch_name = f"{BRANCH_PREFIX}/{ticket_key.lower().replace(' ', '-')}"
     commit_message = f"[{ticket_key}] {ticket_summary}"
 
-    # --- Git operations ---
     logger.info("Creating branch: %s", branch_name)
     _run_git(repo_path, "checkout", "-b", branch_name)
 
@@ -88,14 +63,10 @@ def create_pull_request(
     logger.info("Committing: %s", commit_message)
     _run_git(repo_path, "commit", "-m", commit_message)
 
-    # Ensure remote URL has token for push authentication
     _ensure_authenticated_remote(repo_path, github_token, repo_owner, repo_name)
 
     logger.info("Pushing branch to origin...")
     _run_git(repo_path, "push", "origin", branch_name)
-
-    # --- Create PR via GitHub API ---
-    logger.info("Creating pull request on %s/%s...", repo_owner, repo_name)
 
     files_list = "\n".join(f"- `{f}`" for f in files_changed) if files_changed else "- (none tracked)"
 
@@ -136,38 +107,15 @@ def commit_and_push_to_branch(
     branch_name: str,
     commit_message: str,
 ) -> str:
-    """Stage all changes, commit, and push to an existing branch.
-
-    Parameters
-    ----------
-    repo_path : str
-        Absolute path to the locally cloned repo (already on the target branch).
-    github_token : str
-        GitHub personal access token.
-    repo_owner : str
-        GitHub org or username.
-    repo_name : str
-        Repository name.
-    branch_name : str
-        The branch to push to (must already be checked out).
-    commit_message : str
-        Commit message.
-
-    Returns
-    -------
-    str
-        The commit SHA of the new commit.
-    """
+    """Stage all changes, commit, and push to an existing branch."""
     logger.info("Staging all changes...")
     _run_git(repo_path, "add", ".")
 
     logger.info("Committing: %s", commit_message)
     _run_git(repo_path, "commit", "-m", commit_message)
 
-    # Get the commit SHA before pushing
     commit_sha = _run_git(repo_path, "rev-parse", "HEAD")
 
-    # Ensure remote URL has token for push authentication
     _ensure_authenticated_remote(repo_path, github_token, repo_owner, repo_name)
 
     logger.info("Pushing to branch %s...", branch_name)
@@ -185,35 +133,28 @@ def reply_to_pr_comment(
     comment_id: int,
     reply_body: str,
 ) -> str:
-    """Post a reply to a PR review comment on GitHub.
-
-    Parameters
-    ----------
-    github_token : str
-        GitHub personal access token.
-    repo_owner : str
-        GitHub org or username.
-    repo_name : str
-        Repository name.
-    pr_number : int
-        Pull request number.
-    comment_id : int
-        The ID of the review comment to reply to.
-    reply_body : str
-        The text of the reply.
-
-    Returns
-    -------
-    str
-        The URL of the reply comment.
-    """
+    """Post a reply to a PR review comment on GitHub."""
     gh = Github(github_token)
     repo = gh.get_repo(f"{repo_owner}/{repo_name}")
     pr = repo.get_pull(pr_number)
 
-    # Create a reply to the specific review comment
     reply = pr.create_review_comment_reply(comment_id, reply_body)
 
     logger.info("Replied to comment %d on PR #%d", comment_id, pr_number)
     return reply.html_url
 
+
+def reply_to_issue_comment(
+    github_token: str,
+    repo_owner: str,
+    repo_name: str,
+    pr_number: int,
+    reply_body: str,
+) -> str:
+    """Post a new issue comment on a PR (used for general PR comments)."""
+    gh = Github(github_token)
+    repo = gh.get_repo(f"{repo_owner}/{repo_name}")
+    pr = repo.get_pull(pr_number)
+    comment = pr.create_issue_comment(reply_body)
+    logger.info("Posted PR comment on #%d", pr_number)
+    return comment.html_url

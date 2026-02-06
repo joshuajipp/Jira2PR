@@ -1,21 +1,17 @@
-"""End-to-end workflow for Slack-triggered Jira tickets.
-
-Given a Jira ticket key, Slack username, and GitHub repo URL, this module:
-1) Fetches the ticket details from Jira.
-2) Clones the GitHub repo to a temporary directory.
-3) Calls ``handle_ticket`` to let the AI implement changes and open a PR.
-"""
+"""End-to-end workflows for Slack tickets and PR comment follow-ups."""
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
+from github import Github
 
 from .config import JIRA_API_TOKEN, JIRA_BASE_URL, JIRA_EMAIL
 
@@ -107,7 +103,6 @@ def _parse_github_repo(repo_url: str) -> tuple[str, str]:
         raise ValueError("Repository URL is required.")
 
     if repo_url.startswith("git@"):
-        # git@github.com:owner/repo.git
         path = repo_url.split(":", 1)[-1]
     else:
         parsed = urlparse(repo_url)
@@ -124,41 +119,69 @@ def _parse_github_repo(repo_url: str) -> tuple[str, str]:
 
 
 def _make_authenticated_url(repo_url: str, token: str) -> str:
-    """Inject GitHub token into the repo URL for authenticated access.
-    
-    Converts https://github.com/owner/repo to https://TOKEN@github.com/owner/repo
-    """
+    """Inject GitHub token into the repo URL for authenticated access."""
     if not token:
         return repo_url
-    
-    # Handle SSH URLs - convert to HTTPS with token
+
     if repo_url.startswith("git@github.com:"):
         path = repo_url.replace("git@github.com:", "")
         return f"https://{token}@github.com/{path}"
-    
-    # Handle HTTPS URLs
+
     if repo_url.startswith("https://github.com"):
         return repo_url.replace("https://github.com", f"https://{token}@github.com")
-    
-    # Handle URLs that already have a token or other auth
+
     if "@github.com" in repo_url:
         return repo_url
-    
+
     return repo_url
 
 
-def _clone_repo(repo_url: str, dest: Path, github_token: str = None) -> None:
-    """Clone the given repo URL into ``dest``.
-    
-    If github_token is provided, it will be used for authentication.
-    """
-    # Use authenticated URL if token provided
+def _clone_repo(
+    repo_url: str,
+    dest: Path,
+    github_token: str | None = None,
+    branch: str | None = None,
+) -> None:
+    """Clone the given repo URL into ``dest``."""
     clone_url = _make_authenticated_url(repo_url, github_token) if github_token else repo_url
-    
-    # Log without exposing the token
-    logger.info("Cloning repo %s into %s", repo_url, dest)
+
+    logger.info("Cloning repo %s into %s (branch=%s)", repo_url, dest, branch or "default")
+    cmd = ["git", "clone", "--depth", "1", clone_url, str(dest)]
+    if branch:
+        cmd.extend(["--branch", branch])
     subprocess.run(
-        ["git", "clone", "--depth", "1", clone_url, str(dest)],
+        cmd,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+
+def _clone_repo_branch(
+    repo_url: str, dest: Path, branch: str, github_token: str | None = None
+) -> None:
+    """Clone a specific branch of a repo into ``dest`` for PR comment handling."""
+    clone_url = _make_authenticated_url(repo_url, github_token) if github_token else repo_url
+
+    logger.info("Cloning branch '%s' of %s into %s", branch, repo_url, dest)
+    subprocess.run(
+        ["git", "clone", "--branch", branch, "--single-branch", clone_url, str(dest)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    # Configure git user for commits in follow-up flows
+    subprocess.run(
+        ["git", "config", "user.email", "ai-agent@hackathon.local"],
+        cwd=str(dest),
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "AI Code Agent"],
+        cwd=str(dest),
         check=True,
         text=True,
         capture_output=True,
@@ -166,16 +189,11 @@ def _clone_repo(repo_url: str, dest: Path, github_token: str = None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Public workflow
+# Slack ticket workflow
 # ---------------------------------------------------------------------------
 
 def process_slack_ticket(ticket_key: str, repo_url: str, slack_username: str) -> str:
-    """End-to-end flow for a Slack command.
-
-    - Fetch Jira ticket details
-    - Clone the GitHub repo
-    - Call handle_ticket to generate the PR
-    """
+    """End-to-end flow for a Slack command (Jira ticket -> PR)."""
     logger.info(
         "Received Slack request from %s for ticket %s and repo %s",
         slack_username,
@@ -215,81 +233,58 @@ def process_slack_ticket(ticket_key: str, repo_url: str, slack_username: str) ->
 # PR comment resolution workflow
 # ---------------------------------------------------------------------------
 
-def _clone_repo_branch(
-    repo_url: str, dest: Path, branch: str, github_token: str | None = None
-) -> None:
-    """Clone a specific branch of a repo into ``dest``.
+TRIGGER_PREFIXES = ("ai:", "ai please", "/ai", "@ai")
 
-    Unlike ``_clone_repo`` (which does a shallow clone of the default branch),
-    this fetches just enough history to push a new commit to ``branch``.
-    """
-    clone_url = (
-        _make_authenticated_url(repo_url, github_token)
-        if github_token
-        else repo_url
-    )
 
-    logger.info("Cloning branch '%s' of %s into %s", branch, repo_url, dest)
-    subprocess.run(
-        ["git", "clone", "--branch", branch, "--single-branch", clone_url, str(dest)],
-        check=True,
-        text=True,
-        capture_output=True,
-    )
-
-    # Configure git user for commits
-    subprocess.run(
-        ["git", "config", "user.email", "ai-agent@hackathon.local"],
-        cwd=str(dest), check=True, text=True, capture_output=True,
-    )
-    subprocess.run(
-        ["git", "config", "user.name", "AI Code Agent"],
-        cwd=str(dest), check=True, text=True, capture_output=True,
-    )
+def _is_ai_trigger(text: str) -> bool:
+    stripped = (text or "").strip().lower()
+    return any(stripped.startswith(prefix) for prefix in TRIGGER_PREFIXES)
 
 
 def process_pr_comment(
     webhook_payload: dict,
     additional_payloads: list[dict] | None = None,
 ) -> str:
-    """End-to-end flow for resolving PR review comment(s).
-
-    Accepts one or more GitHub webhook payloads, clones the PR branch,
-    runs the AI agent to resolve all comments, commits, pushes, and
-    replies to each comment on GitHub.
-
-    Parameters
-    ----------
-    webhook_payload : dict
-        The primary GitHub ``pull_request_review_comment`` webhook payload.
-    additional_payloads : list[dict], optional
-        Extra comment payloads from the same review to batch together.
-
-    Returns
-    -------
-    str
-        The commit SHA of the resolution commit.
-    """
-    # Late import to avoid circular dependency at load time
-    from . import handle_pr_comments, parse_comment_from_payload
-
+    """Resolve PR comments (review or general) via GitHub webhook payloads."""
     github_token = os.environ.get("GITHUB_TOKEN")
     if not github_token:
         raise RuntimeError("GITHUB_TOKEN environment variable is required.")
 
-    # Parse all comment payloads
+    # Late import to avoid circular dependency at load time
+    from . import handle_pr_comments, parse_comment_from_payload
+
     comments = [parse_comment_from_payload(webhook_payload)]
     if additional_payloads:
         for payload in additional_payloads:
             comments.append(parse_comment_from_payload(payload))
 
-    # Extract repo / PR info from the first comment
+    if not _is_ai_trigger(comments[0]["body"]):
+        raise ValueError("Ignored: comment did not include AI trigger.")
+
     first = comments[0]
     repo_owner = first["repo_owner"]
     repo_name = first["repo_name"]
-    branch_name = first["branch"]
+    branch_name = first.get("branch") or ""
     pr_number = first["pr_number"]
     clone_url = first["clone_url"]
+    pr_title = first.get("pr_title", "")
+
+    if not pr_number:
+        raise ValueError("PR number missing from comment payload.")
+
+    # If branch/clone_url missing (e.g., issue_comment), fetch PR details
+    if not branch_name or not clone_url:
+        gh = Github(github_token)
+        repo = gh.get_repo(f"{repo_owner}/{repo_name}")
+        pr = repo.get_pull(pr_number)
+        branch_name = pr.head.ref
+        clone_url = pr.head.repo.clone_url
+        pr_title = pr.title
+        for c in comments:
+            if not c.get("branch"):
+                c["branch"] = branch_name
+            if not c.get("pr_title"):
+                c["pr_title"] = pr_title
 
     logger.info(
         "Processing %d PR comment(s) on %s/%s PR #%d branch %s",
