@@ -107,7 +107,10 @@ cp .env.example .env  # Then edit .env with your values
 source venv/bin/activate
 
 # Run the Slack bot
-python -m slack_bot.app
+python3 -m slack_bot.app
+
+# Run the GitHub webhook server (for PR comment follow-ups)
+PORT=8080 python3 -m code_agent.webhook_server
 ```
 
 You should see:
@@ -139,10 +142,10 @@ The bot will:
   # or
   PORT=9000 python -m code_agent.webhook_server
   ```
-- Point a GitHub webhook (or App) at `POST /webhooks/github`.
+- Point a GitHub webhook (or App) at `POST /webhooks/github` (use the correct host/port, e.g., `http://<host>:8000/webhooks/github`).
 - Subscribe to `issue_comment` and `pull_request_review_comment` events.
-- Comments must start with one of: `ai:`, `ai please`, `/ai`, `@ai` to trigger the agent.
-- The workflow detects the PR branch (works for both conversation tab comments and inline review comments), reruns the AI agent with the comment as context, pushes to the same branch, and posts a PR comment summarizing the changes.
+- Comments must start with one of: `ai:`, `ai please`, `/ai`, `@ai` to trigger the agent (case-insensitive).
+- Works for both PR conversation comments and inline review comments; the service clones the PR branch, reruns the AI with the comment context, pushes to the same branch, and replies to the comment (or adds a PR comment for general comments).
 
 ## Project Structure
 
