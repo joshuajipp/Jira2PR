@@ -27,6 +27,11 @@ BRANCH_PREFIX = "ai"
 # Base branch to create PRs against
 BASE_BRANCH = os.environ.get("BASE_BRANCH", "main")
 
+# Jira credentials (used by the Slack workflow)
+JIRA_BASE_URL = os.environ.get("JIRA_BASE_URL")
+JIRA_EMAIL = os.environ.get("JIRA_EMAIL")
+JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN")
+
 # System prompt that instructs the model how to behave
 SYSTEM_PROMPT = """You are a senior software engineer AI agent. You are given a Jira ticket \
 with requirements, and you have access to a code repository via tools.
@@ -45,4 +50,3 @@ Rules:
 - If you need to add dependencies, mention them in your summary.
 - Do NOT make unrelated changes.
 - Always explore the repo structure first before making any changes."""
-

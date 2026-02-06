@@ -97,5 +97,6 @@ def handle_ticket(
     return pr_url
 
 
-__all__ = ["handle_ticket"]
+from .workflow import fetch_jira_ticket, process_slack_ticket
 
+__all__ = ["handle_ticket", "process_slack_ticket", "fetch_jira_ticket"]
