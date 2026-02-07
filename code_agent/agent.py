@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -112,6 +112,8 @@ def run_agent(
     *,
     user_prompt: str | None = None,
     system_prompt: str | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+    on_tool_call: Callable[[str, str], None] | None = None,
 ) -> tuple[str, list[str]]:
     """Run the agentic loop that modifies the repository.
 
@@ -159,6 +161,8 @@ def run_agent(
 
     for iteration in range(1, MAX_AGENT_ITERATIONS + 1):
         logger.info("Agent iteration %d / %d", iteration, MAX_AGENT_ITERATIONS)
+        if on_progress:
+            on_progress(iteration, MAX_AGENT_ITERATIONS)
 
         # --- Call Bedrock Converse API ---
         response = client.converse(
@@ -183,7 +187,8 @@ def run_agent(
         # --- Process tool use requests ---
         if stop_reason == "tool_use":
             tool_results = _process_tool_calls(
-                assistant_message, repo_path, files_changed
+                assistant_message, repo_path, files_changed,
+                on_tool_call=on_tool_call,
             )
             # Feed tool results back as the next user message
             messages.append({"role": "user", "content": tool_results})
@@ -206,6 +211,7 @@ def _process_tool_calls(
     assistant_message: dict,
     repo_path: str,
     files_changed: list[str],
+    on_tool_call: Callable[[str, str], None] | None = None,
 ) -> list[dict]:
     """Execute every tool call in the assistant message and build results."""
     tool_results = []
@@ -219,11 +225,11 @@ def _process_tool_calls(
         tool_input = tool["input"]
         tool_id = tool["toolUseId"]
 
-        logger.info(
-            "  Tool: %s(%s)",
-            tool_name,
-            json.dumps(tool_input, default=str)[:120],
-        )
+        input_preview = json.dumps(tool_input, default=str)[:120]
+        logger.info("  Tool: %s(%s)", tool_name, input_preview)
+
+        if on_tool_call:
+            on_tool_call(tool_name, input_preview)
 
         result_text = execute_tool(tool_name, tool_input, repo_path)
 
